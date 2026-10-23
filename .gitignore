@@ -1,7 +1,7 @@
-# Track only the bare-metal main.c sources (plus the register guide).
+# Track only the bare-metal main.c sources plus the docs (register guide + RM0390 manual).
 # CubeIDE project files, Debug output, linker/startup files stay local.
 *
 !*/
 !.gitignore
 !**/Src/main.c
-!docs/STM32F446RE Bare-Metal Register Guide.pdf
+!docs/*.pdf
