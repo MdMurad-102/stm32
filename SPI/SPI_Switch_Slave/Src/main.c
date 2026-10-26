@@ -3,10 +3,11 @@
  * Uses SPI2 (PB13/14/15) so the LED (PA5) and button (PC13) stay free.
  *
  * The master drives the bus, so this board just answers each transfer:
- *   'S' from master → the master pressed → my LED blinks 5×.
+ *   'S' from master → the master pressed → my LED blinks 5× → I answer 'D' (ack).
  *   'K' from master → my press was acked → little 2-blink.
- *   On every transfer I load my BUTTON STATE ('B' pressed / 0 released) so
- *   the master can see when I press.
+ *   Otherwise I load my BUTTON STATE ('B' pressed / 0 released) so the
+ *   master can see when I press.
+ *   Any other byte = bit sync lost → I reset my SPI (self re-sync).
  * Idle: dark.
  *
  * WIRING (3 wires + GND): PB13(SCK)←PB13, PB15(MOSI)←PB15, PB14(MISO)→PB14, GND↔GND
@@ -20,6 +21,7 @@
 #define GPIOA_MODER  (*(volatile unsigned int *)0x40020000)
 #define GPIOA_ODR    (*(volatile unsigned int *)0x40020014)
 #define GPIOB_MODER  (*(volatile unsigned int *)0x40020400)
+#define GPIOB_PUPDR  (*(volatile unsigned int *)0x4002040C)
 #define GPIOB_AFRH   (*(volatile unsigned int *)0x40020424)
 #define GPIOC_PUPDR  (*(volatile unsigned int *)0x4002080C)
 #define GPIOC_IDR    (*(volatile unsigned int *)0x40020810)
@@ -58,20 +60,28 @@ int main(void)
     GPIOB_MODER |=  ((2 << 26) | (2 << 28) | (2U << 30));
     GPIOB_AFRH  &= ~((0xF << 20) | (0xF << 24) | (0xFU << 28));
     GPIOB_AFRH  |=  ((5 << 20) | (5 << 24) | (5U << 28));
+    GPIOB_PUPDR &= ~((3 << 26) | (3U << 30));                      /* SCK + MOSI pull-down: */
+    GPIOB_PUPDR |=  ((2 << 26) | (2U << 30));                      /* no fake clocks when master is off */
     GPIOC_PUPDR &= ~(3 << 26);  GPIOC_PUPDR |= (1 << 26);          /* PC13 pull-up */
 
     SPI2_CR1 = (1 << 9) | (1 << 6);       /* slave, software NSS selected, enable */
 
-    while (!(SPI2_SR & (1 << 1)));  SPI2_DR = 0x00;   /* preload: not pressed */
+    while (!(SPI2_SR & (1 << 1)));                 /* TXE */
+    SPI2_DR = 0x00;                                /* preload: not pressed */
 
     while (1) {
         while (!(SPI2_SR & (1 << 0)));                 /* RXNE: a transfer came */
-        unsigned char cmd = (unsigned char)SPI2_DR;
+        unsigned char cmd   = (unsigned char)SPI2_DR;
+        unsigned char reply = pressed() ? 'B' : 0x00;  /* normally: my button state */
 
-        if      (cmd == 'S') blink(5);                 /* master pressed → I blink */
-        else if (cmd == 'K') little_blink();           /* my press acked → little  */
+        if      (cmd == 'S') { blink(5); reply = 'D'; }   /* master pressed → I blink → ack 'D' */
+        else if (cmd == 'K') little_blink();              /* my press acked → little blink    */
+        else if (cmd != 0x00) {                           /* unknown byte: bit sync lost      */
+            delay_ms(1);                                  /* let the master finish its byte   */
+            SPI2_CR1 &= ~(1 << 6);  SPI2_CR1 |= (1 << 6); /* SPI off → on: shift register reset */
+        }
 
         while (!(SPI2_SR & (1 << 1)));                 /* TXE */
-        SPI2_DR = pressed() ? 'B' : 0x00;              /* always report my button */
+        SPI2_DR = reply;
     }
 }

@@ -4,10 +4,11 @@
  * Both boards have a button and an LED. SPI is master-driven, so THIS
  * board drives both directions:
  *
- *   MY button pressed   → send 'S' → slave blinks 5× → I little-blink (ack).
+ *   MY button pressed   → send 'S' → slave blinks 5× → slave answers 'D'
+ *                          → I little-blink (ack). No 'D' → I stay dark.
  *   SLAVE button pressed → I find out by POLLING the slave → I blink 5×
  *                          → I send 'K' so the slave little-blinks (its ack).
- * Idle: both dark.
+ * Idle: both dark.  No slave / wrong wiring: both dark.
  *
  * WIRING (3 wires + GND): PB13(SCK)→PB13, PB15(MOSI)→PB15, PB14(MISO)←PB14, GND↔GND
  * LED: PA5   BUTTON: PC13   LINK: SPI2 master
@@ -73,14 +74,15 @@ int main(void)
 
     int prev = 0, prevB = 0;
     while (1) {
-        /* ---- MY button → slave blinks, then I little-blink ---- */
+        /* ---- MY button → slave blinks, then I little-blink ONLY if it answered ---- */
         int now = pressed();
         if (now && !prev) {
             delay_ms(20);
             if (pressed()) {
-                spi_xfer('S');                 /* tell slave: blink  */
-                delay_ms(SLAVE_BLINK_WAIT);    /* let it finish      */
-                little_blink();                /* my ack             */
+                spi_xfer('S');                     /* tell slave: blink             */
+                delay_ms(SLAVE_BLINK_WAIT);        /* let it finish                 */
+                if (spi_xfer(0x00) == 'D')         /* 'D' comes only if it really blinked */
+                    little_blink();                /* my ack. No 'D' → stay dark    */
             }
         }
         prev = now;
