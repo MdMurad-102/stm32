@@ -8,14 +8,17 @@
  *                          → I little-blink (ack). No 'D' → I stay dark.
  *   SLAVE button pressed → I find out by POLLING the slave → I blink 5×
  *                          → I send 'K' so the slave little-blinks (its ack).
+ * Timing rule: never send a byte while the slave is blinking, and leave a
+ * gap after every byte so the slave can load its next reply.
  * Idle: both dark.  No slave / wrong wiring: both dark.
  *
  * WIRING (3 wires + GND): PB13(SCK)→PB13, PB15(MOSI)→PB15, PB14(MISO)←PB14, GND↔GND
  * LED: PA5   BUTTON: PC13   LINK: SPI2 master
  */
 
-#define BLINK_MS          200
-#define SLAVE_BLINK_WAIT  2500   /* > slave's 5-blink time; don't poll while it blinks */
+#define BLINK_MS           200
+#define SLAVE_BLINK_WAIT   2500  /* > slave's 5-blink time (2000 ms) */
+#define SLAVE_LITTLE_WAIT  600   /* > slave's little-blink time (480 ms) */
 
 #define RCC_AHB1ENR  (*(volatile unsigned int *)0x40023830)
 #define RCC_APB1ENR  (*(volatile unsigned int *)0x40023840)
@@ -83,6 +86,7 @@ int main(void)
                 delay_ms(SLAVE_BLINK_WAIT);        /* let it finish                 */
                 if (spi_xfer(0x00) == 'D')         /* 'D' comes only if it really blinked */
                     little_blink();                /* my ack. No 'D' → stay dark    */
+                delay_ms(10);                      /* gap before the next byte      */
             }
         }
         prev = now;
@@ -90,9 +94,10 @@ int main(void)
         /* ---- poll the SLAVE's button ---- */
         unsigned char r = spi_xfer(0x00);
         int nowB = (r == 'B');
-        if (nowB && !prevB) {                  /* slave just pressed */
-            blink(5);                          /* my LED blinks      */
+        if (nowB && !prevB) {                  /* slave just pressed        */
+            blink(5);                          /* my LED blinks             */
             spi_xfer('K');                     /* ack → slave little-blinks */
+            delay_ms(SLAVE_LITTLE_WAIT);       /* don't poll while it does  */
         }
         prevB = nowB;
 

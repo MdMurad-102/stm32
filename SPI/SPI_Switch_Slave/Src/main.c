@@ -7,7 +7,9 @@
  *   'K' from master → my press was acked → little 2-blink.
  *   Otherwise I load my BUTTON STATE ('B' pressed / 0 released) so the
  *   master can see when I press.
- *   Any other byte = bit sync lost → I reset my SPI (self re-sync).
+ * Self-check on every byte: if my previous reply is still waiting in the
+ * transmit buffer (I am one byte late) or an unknown byte arrives (bit sync
+ * lost), I reset SPI2 through RCC and carry on in step.
  * Idle: dark.
  *
  * WIRING (3 wires + GND): PB13(SCK)←PB13, PB15(MOSI)←PB15, PB14(MISO)→PB14, GND↔GND
@@ -17,6 +19,7 @@
 #define BLINK_MS  200
 
 #define RCC_AHB1ENR  (*(volatile unsigned int *)0x40023830)
+#define RCC_APB1RSTR (*(volatile unsigned int *)0x40023820)
 #define RCC_APB1ENR  (*(volatile unsigned int *)0x40023840)
 #define GPIOA_MODER  (*(volatile unsigned int *)0x40020000)
 #define GPIOA_ODR    (*(volatile unsigned int *)0x40020014)
@@ -49,6 +52,12 @@ static void little_blink(void) {
         GPIOA_ODR &= ~(1 << 5);  delay_ms(120);
     }
 }
+/* Full SPI2 reset: empties both buffers and restarts the bit counter */
+static void spi_reset(void) {
+    RCC_APB1RSTR |=  (1 << 14);
+    RCC_APB1RSTR &= ~(1 << 14);
+    SPI2_CR1 = (1 << 9) | (1 << 6);       /* slave, software NSS selected, enable */
+}
 
 int main(void)
 {
@@ -64,22 +73,22 @@ int main(void)
     GPIOB_PUPDR |=  ((2 << 26) | (2U << 30));                      /* no fake clocks when master is off */
     GPIOC_PUPDR &= ~(3 << 26);  GPIOC_PUPDR |= (1 << 26);          /* PC13 pull-up */
 
-    SPI2_CR1 = (1 << 9) | (1 << 6);       /* slave, software NSS selected, enable */
+    spi_reset();                                     /* clean start as slave */
 
     while (!(SPI2_SR & (1 << 1)));                 /* TXE */
     SPI2_DR = 0x00;                                /* preload: not pressed */
 
     while (1) {
         while (!(SPI2_SR & (1 << 0)));                 /* RXNE: a transfer came */
-        unsigned char cmd   = (unsigned char)SPI2_DR;
+        unsigned int  sr  = SPI2_SR;
+        unsigned char cmd = (unsigned char)SPI2_DR;
+        if (!(sr & (1 << 1))) spi_reset();            /* TXE=0: last reply still queued → I am
+                                                         one byte late → reset to get back in step */
         unsigned char reply = pressed() ? 'B' : 0x00;  /* normally: my button state */
 
-        if      (cmd == 'S') { blink(5); reply = 'D'; }   /* master pressed → I blink → ack 'D' */
-        else if (cmd == 'K') little_blink();              /* my press acked → little blink    */
-        else if (cmd != 0x00) {                           /* unknown byte: bit sync lost      */
-            delay_ms(1);                                  /* let the master finish its byte   */
-            SPI2_CR1 &= ~(1 << 6);  SPI2_CR1 |= (1 << 6); /* SPI off → on: shift register reset */
-        }
+        if      (cmd == 'S') { blink(5); reply = 'D'; }    /* master pressed → I blink → ack 'D' */
+        else if (cmd == 'K') little_blink();               /* my press acked → little blink    */
+        else if (cmd != 0x00) { delay_ms(1); spi_reset(); } /* unknown byte: bit sync lost → reset */
 
         while (!(SPI2_SR & (1 << 1)));                 /* TXE */
         SPI2_DR = reply;
